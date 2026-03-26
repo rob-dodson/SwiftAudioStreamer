@@ -76,6 +76,26 @@ private func parsePLS(from url: URL) async throws -> [URL] {
     return resolvedURLs
 }
 
+private func parseM3U(from url: URL) async throws -> [URL] {
+    let playlist = try await loadPlaylistString(from: url)
+    var resolvedURLs: [URL] = []
+
+    for rawLine in playlist.components(separatedBy: .newlines) {
+        let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty, !line.hasPrefix("#"), let streamURL = URL(string: line) else {
+            continue
+        }
+
+        resolvedURLs.append(streamURL)
+    }
+
+    guard !resolvedURLs.isEmpty else {
+        throw HarnessInputError.emptyPlaylist(url)
+    }
+
+    return resolvedURLs
+}
+
 private func resolvePlayableURLs(from arguments: [String]) async throws -> [URL] {
     var resolved: [URL] = []
 
@@ -84,10 +104,14 @@ private func resolvePlayableURLs(from arguments: [String]) async throws -> [URL]
             throw HarnessInputError.invalidInput(argument)
         }
 
-        if url.pathExtension.lowercased() == "pls" {
+        switch url.pathExtension.lowercased() {
+        case "pls":
             let playlistURLs = try await parsePLS(from: url)
             resolved.append(playlistURLs[0])
-        } else {
+        case "m3u":
+            let playlistURLs = try await parseM3U(from: url)
+            resolved.append(playlistURLs[0])
+        default:
             resolved.append(url)
         }
     }
