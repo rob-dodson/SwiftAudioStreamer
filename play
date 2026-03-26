@@ -1,0 +1,1 @@
+./swift-audio-streamer --volume 1 https://api.somafm.com/cliqhop130.pls  https://ice6.somafm.com/bossa-128-aac https://ice2.somafm.com/suburbsofgoa-128-mp3 https://ice6.somafm.com/reggae-256-mp3 https://ice6.somafm.com/bossa-128-aac
