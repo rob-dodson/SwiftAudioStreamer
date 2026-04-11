@@ -5,6 +5,7 @@ import Foundation
 enum HarnessInputError: LocalizedError {
     case invalidInput(String)
     case invalidVolume(String)
+    case invalidPlayDuration(String)
     case emptyPlaylist(URL)
 
     var errorDescription: String? {
@@ -13,6 +14,8 @@ enum HarnessInputError: LocalizedError {
             return "invalid input: \(value)"
         case let .invalidVolume(value):
             return "invalid --volume value: \(value) (expected 0.0 to 1.0)"
+        case let .invalidPlayDuration(value):
+            return "invalid --play-duration value: \(value) (expected seconds >= 0)"
         case let .emptyPlaylist(url):
             return "no stream URLs found in playlist: \(url.absoluteString)"
         }
@@ -262,6 +265,7 @@ final class StreamHarness: AudioStreamDelegate {
 let arguments = Array(CommandLine.arguments.dropFirst())
 var debugLoggingEnabled = false
 var volume: Float = 1.0
+var playDuration: TimeInterval = 5
 var positionalArguments: [String] = []
 
 var argumentIndex = 0
@@ -283,6 +287,18 @@ while argumentIndex < arguments.count {
         }
         volume = parsedVolume
         argumentIndex += 2
+    case "--play-duration":
+        let valueIndex = argumentIndex + 1
+        guard valueIndex < arguments.count else {
+            fputs("missing value for --play-duration\n", stderr)
+            Darwin.exit(2)
+        }
+        guard let parsedPlayDuration = TimeInterval(arguments[valueIndex]), parsedPlayDuration >= 0 else {
+            fputs("\(HarnessInputError.invalidPlayDuration(arguments[valueIndex]).localizedDescription)\n", stderr)
+            Darwin.exit(2)
+        }
+        playDuration = parsedPlayDuration
+        argumentIndex += 2
     default:
         positionalArguments.append(argument)
         argumentIndex += 1
@@ -290,7 +306,7 @@ while argumentIndex < arguments.count {
 }
 
 guard !positionalArguments.isEmpty else {
-    fputs("usage: swift-audio-streamer [--debug] [--volume 0.0-1.0] <stream-url> [stream-url ...]\n", stderr)
+    fputs("usage: swift-audio-streamer [--debug] [--volume 0.0-1.0] [--play-duration seconds] <stream-url> [stream-url ...]\n", stderr)
     Darwin.exit(2)
 }
 
@@ -310,7 +326,7 @@ Task { @MainActor in
 
     let harness = StreamHarness(debugLoggingEnabled: debugLoggingEnabled)
     harness.setVolume(volume)
-    let exitCode = await harness.run(urls: urls)
+    let exitCode = await harness.run(urls: urls, playDuration: playDuration)
     if debugLoggingEnabled {
         fputs("[main] exiting with code \(exitCode)\n", stderr)
     }
