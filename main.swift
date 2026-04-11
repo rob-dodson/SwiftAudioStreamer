@@ -129,6 +129,7 @@ final class StreamHarness: AudioStreamDelegate {
     private var finishContinuation: CheckedContinuation<Int32, Never>?
     private var lastPrintedMetadata: [String: String] = [:]
     private var rotationTask: Task<Void, Never>?
+    private var powerTask: Task<Void, Never>?
 
     init(configuration: AudioStreamConfiguration = .init(), debugLoggingEnabled: Bool = false) {
         audioStream = AudioStream(
@@ -148,7 +149,7 @@ final class StreamHarness: AudioStreamDelegate {
         audioStream.delegate = self
     }
 
-    func run(urls: [URL], playDuration: TimeInterval = 5) async -> Int32 {
+    func run(urls: [URL], playDuration: TimeInterval = 5, printPowerLevels: Bool = false) async -> Int32 {
         guard !urls.isEmpty else {
             return 2
         }
@@ -165,6 +166,9 @@ final class StreamHarness: AudioStreamDelegate {
                     print("playing [\(index + 1)/\(urls.count)]: \(url.absoluteString)")
                     self.audioStream.setURL(url)
                     await self.audioStream.open()
+                    if printPowerLevels {
+                        self.startPowerLevelLogging()
+                    }
 
                     do {
                         try await Task.sleep(nanoseconds: UInt64(playDuration * 1_000_000_000))
@@ -172,6 +176,7 @@ final class StreamHarness: AudioStreamDelegate {
                         return
                     }
 
+                    self.stopPowerLevelLogging()
                     await self.audioStream.close()
                 }
             }
@@ -241,6 +246,7 @@ final class StreamHarness: AudioStreamDelegate {
     private func shutdown(exitCode: Int32) async {
         rotationTask?.cancel()
         rotationTask = nil
+        stopPowerLevelLogging()
         await audioStream.close()
         finish(with: exitCode)
     }
@@ -250,6 +256,7 @@ final class StreamHarness: AudioStreamDelegate {
     }
 
     private func finish(with exitCode: Int32) {
+        stopPowerLevelLogging()
         stopSignal?.cancel()
         stopSignal = nil
 
@@ -260,12 +267,44 @@ final class StreamHarness: AudioStreamDelegate {
         self.finishContinuation = nil
         finishContinuation.resume(returning: exitCode)
     }
+
+    private func startPowerLevelLogging() {
+        stopPowerLevelLogging()
+        powerTask = Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+
+            while !Task.isCancelled {
+                let levels = self.audioStream.levels
+                print(
+                    String(
+                        format: "power avg=%0.1f dB peak=%0.1f dB",
+                        levels.averagePower,
+                        levels.peakPower
+                    )
+                )
+
+                do {
+                    try await Task.sleep(nanoseconds: 250_000_000)
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private func stopPowerLevelLogging() {
+        powerTask?.cancel()
+        powerTask = nil
+    }
 }
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 var debugLoggingEnabled = false
 var volume: Float = 1.0
 var playDuration: TimeInterval = 5
+var printPowerLevels = false
 var positionalArguments: [String] = []
 
 var argumentIndex = 0
@@ -274,6 +313,9 @@ while argumentIndex < arguments.count {
     switch argument {
     case "--debug":
         debugLoggingEnabled = true
+        argumentIndex += 1
+    case "--power":
+        printPowerLevels = true
         argumentIndex += 1
     case "--volume":
         let valueIndex = argumentIndex + 1
@@ -306,7 +348,7 @@ while argumentIndex < arguments.count {
 }
 
 guard !positionalArguments.isEmpty else {
-    fputs("usage: swift-audio-streamer [--debug] [--volume 0.0-1.0] [--play-duration seconds] <stream-url> [stream-url ...]\n", stderr)
+    fputs("usage: swift-audio-streamer [--debug] [--power] [--volume 0.0-1.0] [--play-duration seconds] <stream-url> [stream-url ...]\n", stderr)
     Darwin.exit(2)
 }
 
@@ -326,7 +368,7 @@ Task { @MainActor in
 
     let harness = StreamHarness(debugLoggingEnabled: debugLoggingEnabled)
     harness.setVolume(volume)
-    let exitCode = await harness.run(urls: urls, playDuration: playDuration)
+    let exitCode = await harness.run(urls: urls, playDuration: playDuration, printPowerLevels: printPowerLevels)
     if debugLoggingEnabled {
         fputs("[main] exiting with code \(exitCode)\n", stderr)
     }

@@ -1,6 +1,23 @@
 import AVFoundation
 import Foundation
 
+private final class AudioLevelMeterStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var state = AudioLevelMeterState(averagePower: -80, peakPower: -80)
+
+    func load() -> AudioLevelMeterState {
+        lock.lock()
+        defer { lock.unlock() }
+        return state
+    }
+
+    func store(_ newState: AudioLevelMeterState) {
+        lock.lock()
+        state = newState
+        lock.unlock()
+    }
+}
+
 @MainActor
 public final class EngineAudioQueue: AudioStreamRenderer {
     public weak var delegate: AudioQueueDelegate?
@@ -33,11 +50,12 @@ public final class EngineAudioQueue: AudioStreamRenderer {
     }
 
     public var levels: AudioLevelMeterState {
-        .init()
+        meterStore.load()
     }
 
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
+    private let meterStore = AudioLevelMeterStore()
     private var outputFormat: AVAudioFormat?
     private var prepared = false
     private var scheduledBufferCount = 0
@@ -67,6 +85,7 @@ public final class EngineAudioQueue: AudioStreamRenderer {
         self.outputFormat = outputFormat
         engine.attach(playerNode)
         engine.connect(playerNode, to: engine.mainMixerNode, format: outputFormat)
+        installLevelTap(format: outputFormat)
 
         do {
             try engine.start()
@@ -155,12 +174,15 @@ public final class EngineAudioQueue: AudioStreamRenderer {
     public func stop(immediately: Bool) {
         guard prepared || engine.isRunning else {
             state = .idle
+            meterStore.store(.init(averagePower: -80, peakPower: -80))
             return
         }
 
         playerNode.stop()
+        playerNode.removeTap(onBus: 0)
         engine.stop()
         scheduledBufferCount = 0
+        meterStore.store(.init(averagePower: -80, peakPower: -80))
         state = .idle
         debugLog("queue stopped immediately=\(immediately)")
         delegate?.audioQueueStateChanged(.idle)
@@ -169,5 +191,79 @@ public final class EngineAudioQueue: AudioStreamRenderer {
             engine.reset()
             prepared = false
         }
+    }
+
+    private func installLevelTap(format: AVAudioFormat) {
+        playerNode.removeTap(onBus: 0)
+        let meterStore = self.meterStore
+        playerNode.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in
+            meterStore.store(Self.makeMeterState(from: buffer))
+        }
+    }
+
+    nonisolated private static func makeMeterState(from buffer: AVAudioPCMBuffer) -> AudioLevelMeterState {
+        let frameLength = Int(buffer.frameLength)
+        guard frameLength > 0 else {
+            return .init(averagePower: -80, peakPower: -80)
+        }
+
+        switch buffer.format.commonFormat {
+        case .pcmFormatFloat32:
+            guard let channelData = buffer.floatChannelData else {
+                return .init(averagePower: -80, peakPower: -80)
+            }
+            return makeMeterState(
+                channelCount: Int(buffer.format.channelCount),
+                frameLength: frameLength
+            ) { channel, frame in
+                Float(channelData[channel][frame])
+            }
+        case .pcmFormatInt16:
+            guard let channelData = buffer.int16ChannelData else {
+                return .init(averagePower: -80, peakPower: -80)
+            }
+            return makeMeterState(
+                channelCount: Int(buffer.format.channelCount),
+                frameLength: frameLength
+            ) { channel, frame in
+                Float(channelData[channel][frame]) / Float(Int16.max)
+            }
+        case .pcmFormatInt32:
+            guard let channelData = buffer.int32ChannelData else {
+                return .init(averagePower: -80, peakPower: -80)
+            }
+            return makeMeterState(
+                channelCount: Int(buffer.format.channelCount),
+                frameLength: frameLength
+            ) { channel, frame in
+                Float(channelData[channel][frame]) / Float(Int32.max)
+            }
+        default:
+            return .init(averagePower: -80, peakPower: -80)
+        }
+    }
+
+    nonisolated private static func makeMeterState(
+        channelCount: Int,
+        frameLength: Int,
+        sample: (_ channel: Int, _ frame: Int) -> Float
+    ) -> AudioLevelMeterState {
+        let minimumPower: Float = -80
+        var sumSquares: Float = 0
+        var peak: Float = 0
+        let sampleCount = max(channelCount * frameLength, 1)
+
+        for channel in 0..<channelCount {
+            for frame in 0..<frameLength {
+                let amplitude = abs(sample(channel, frame))
+                sumSquares += amplitude * amplitude
+                peak = max(peak, amplitude)
+            }
+        }
+
+        let rms = sqrt(sumSquares / Float(sampleCount))
+        let averagePower = max(minimumPower, 20 * log10(max(rms, 0.000_1)))
+        let peakPower = max(minimumPower, 20 * log10(max(peak, 0.000_1)))
+        return .init(averagePower: averagePower, peakPower: peakPower)
     }
 }

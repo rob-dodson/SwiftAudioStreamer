@@ -1,4 +1,4 @@
-./swift-audio-streamer --volume 1 --play-duration 10 \
+./swift-audio-streamer --volume 1 --play-duration 10 --power \
 	http://listen.xray.fm:8000/stream \
 	https://edg-iad-wunc-ice.streamguys1.com/wunc-128-aac.m3u \
 	https://api.somafm.com/cliqhop130.pls \
