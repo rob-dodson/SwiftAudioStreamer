@@ -1,3 +1,4 @@
+import AVFoundation
 import Dispatch
 import Darwin
 import Foundation
@@ -123,8 +124,13 @@ private func resolvePlayableURLs(from arguments: [String]) async throws -> [URL]
 }
 
 @MainActor
-final class StreamHarness: AudioStreamDelegate {
+final class StreamHarness: NSObject, AudioStreamDelegate, @preconcurrency AVPlayerItemMetadataOutputPushDelegate {
     private let audioStream: AudioStream
+    private var hlsPlayer: AVPlayer?
+    private var hlsPlayerItemObservation: NSKeyValueObservation?
+    private var hlsPlayerFailureObserver: NSObjectProtocol?
+    private var hlsMetadataOutput: AVPlayerItemMetadataOutput?
+    private var volume: Float = 1.0
     private var stopSignal: DispatchSourceSignal?
     private var finishContinuation: CheckedContinuation<Int32, Never>?
     private var lastPrintedMetadata: [String: String] = [:]
@@ -145,6 +151,7 @@ final class StreamHarness: AudioStreamDelegate {
                 return queue
             }
         )
+        super.init()
         audioStream.debugLoggingEnabled = debugLoggingEnabled
         audioStream.delegate = self
     }
@@ -164,20 +171,29 @@ final class StreamHarness: AudioStreamDelegate {
                 for (index, url) in urls.enumerated() {
                     self.lastPrintedMetadata.removeAll(keepingCapacity: true)
                     print("playing [\(index + 1)/\(urls.count)]: \(url.absoluteString)")
-                    self.audioStream.setURL(url)
-                    await self.audioStream.open()
-                    if printPowerLevels {
-                        self.startPowerLevelLogging()
-                    }
-
                     do {
-                        try await Task.sleep(nanoseconds: UInt64(playDuration * 1_000_000_000))
+                        if Self.isHLSURL(url) {
+                            try await self.playHLS(url: url, playDuration: playDuration, printPowerLevels: printPowerLevels)
+                        } else {
+                            self.audioStream.setURL(url)
+                            await self.audioStream.open()
+                            if printPowerLevels {
+                                self.startPowerLevelLogging()
+                            }
+
+                            try await Task.sleep(nanoseconds: UInt64(playDuration * 1_000_000_000))
+                            self.stopPowerLevelLogging()
+                            await self.audioStream.close()
+                        }
                     } catch {
+                        if error is CancellationError {
+                            return
+                        }
+
+                        fputs("\(error.localizedDescription)\n", stderr)
+                        self.finish(with: 1)
                         return
                     }
-
-                    self.stopPowerLevelLogging()
-                    await self.audioStream.close()
                 }
             }
         }
@@ -206,6 +222,10 @@ final class StreamHarness: AudioStreamDelegate {
     }
 
     func audioStream(_ stream: AudioStream, didReceiveMetadata metadata: [String : String]) {
+        printMetadata(metadata)
+    }
+
+    private func printMetadata(_ metadata: [String: String]) {
         guard !metadata.isEmpty else {
             return
         }
@@ -220,6 +240,17 @@ final class StreamHarness: AudioStreamDelegate {
         ]
 
         for key in preferredKeys {
+            guard let value = metadata[key], !value.isEmpty else {
+                continue
+            }
+
+            if lastPrintedMetadata[key] != value {
+                print("\(key): \(value)")
+                lastPrintedMetadata[key] = value
+            }
+        }
+
+        for key in metadata.keys.sorted() where !preferredKeys.contains(key) {
             guard let value = metadata[key], !value.isEmpty else {
                 continue
             }
@@ -247,16 +278,19 @@ final class StreamHarness: AudioStreamDelegate {
         rotationTask?.cancel()
         rotationTask = nil
         stopPowerLevelLogging()
+        stopHLSPlayback()
         await audioStream.close()
         finish(with: exitCode)
     }
 
     func setVolume(_ volume: Float) {
+        self.volume = volume
         audioStream.setVolume(volume)
     }
 
     private func finish(with exitCode: Int32) {
         stopPowerLevelLogging()
+        stopHLSPlayback()
         stopSignal?.cancel()
         stopSignal = nil
 
@@ -297,6 +331,181 @@ final class StreamHarness: AudioStreamDelegate {
     private func stopPowerLevelLogging() {
         powerTask?.cancel()
         powerTask = nil
+    }
+
+    private func playHLS(url: URL, playDuration: TimeInterval, printPowerLevels: Bool) async throws {
+        stopHLSPlayback()
+
+        if printPowerLevels {
+            print("power metering unavailable for HLS playback")
+        }
+
+        let playerItem = AVPlayerItem(url: url)
+        installHLSMetadataOutput(for: playerItem)
+        let player = AVPlayer(playerItem: playerItem)
+        player.volume = volume
+        hlsPlayer = player
+        installHLSFailureObserver(for: playerItem)
+
+        try await waitUntilReadyToPlay(playerItem)
+        await printHLSStaticMetadata(for: playerItem)
+        print("state: playing")
+        player.play()
+
+        do {
+            try await Task.sleep(nanoseconds: UInt64(playDuration * 1_000_000_000))
+        } catch {
+            stopHLSPlayback()
+            throw error
+        }
+
+        stopHLSPlayback()
+    }
+
+    private func installHLSFailureObserver(for playerItem: AVPlayerItem) {
+        hlsPlayerFailureObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime,
+            object: playerItem,
+            queue: .main
+        ) { [weak self] notification in
+            let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error
+            fputs("\((error?.localizedDescription ?? "HLS playback failed"))\n", stderr)
+            Task { @MainActor [weak self] in
+                self?.finish(with: 1)
+            }
+        }
+    }
+
+    private func installHLSMetadataOutput(for playerItem: AVPlayerItem) {
+        let metadataOutput = AVPlayerItemMetadataOutput(identifiers: nil)
+        metadataOutput.setDelegate(self, queue: .main)
+        playerItem.add(metadataOutput)
+        hlsMetadataOutput = metadataOutput
+    }
+
+    private func stopHLSPlayback() {
+        hlsPlayerItemObservation?.invalidate()
+        hlsPlayerItemObservation = nil
+        hlsMetadataOutput = nil
+
+        if let hlsPlayerFailureObserver {
+            NotificationCenter.default.removeObserver(hlsPlayerFailureObserver)
+            self.hlsPlayerFailureObserver = nil
+        }
+
+        hlsPlayer?.pause()
+        hlsPlayer?.replaceCurrentItem(with: nil)
+        hlsPlayer = nil
+    }
+
+    private func waitUntilReadyToPlay(_ playerItem: AVPlayerItem) async throws {
+        switch playerItem.status {
+        case .readyToPlay:
+            return
+        case .failed:
+            throw playerItem.error ?? AudioStreamFailure(code: .open, description: "Failed to prepare HLS playback")
+        case .unknown:
+            break
+        @unknown default:
+            break
+        }
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            var observation: NSKeyValueObservation?
+            observation = playerItem.observe(\.status, options: [.initial, .new]) { item, _ in
+                switch item.status {
+                case .readyToPlay:
+                    observation?.invalidate()
+                    continuation.resume()
+                case .failed:
+                    observation?.invalidate()
+                    continuation.resume(throwing: item.error ?? AudioStreamFailure(code: .open, description: "Failed to prepare HLS playback"))
+                case .unknown:
+                    break
+                @unknown default:
+                    break
+                }
+            }
+            self.hlsPlayerItemObservation = observation
+        }
+    }
+
+    private func printHLSStaticMetadata(for playerItem: AVPlayerItem) async {
+        do {
+            let assetMetadata = try await playerItem.asset.load(.commonMetadata)
+            let metadata = await Self.dictionary(from: assetMetadata)
+            printMetadata(metadata)
+        } catch {
+            // Ignore metadata load failures and continue playback.
+        }
+    }
+
+    func metadataOutput(
+        _ output: AVPlayerItemMetadataOutput,
+        didOutputTimedMetadataGroups groups: [AVTimedMetadataGroup],
+        from playerItemTrack: AVPlayerItemTrack?
+    ) {
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+
+            for group in groups {
+                let metadata = await Self.dictionary(from: group.items)
+                self.printMetadata(metadata)
+            }
+        }
+    }
+
+    private static func isHLSURL(_ url: URL) -> Bool {
+        url.pathExtension.lowercased() == "m3u8"
+    }
+
+    nonisolated private static func dictionary(from items: [AVMetadataItem]) async -> [String: String] {
+        var metadata: [String: String] = [:]
+
+        for item in items {
+            guard let value = await stringValue(from: item), !value.isEmpty else {
+                continue
+            }
+
+            let key = metadataKey(for: item)
+            metadata[key] = value
+        }
+
+        return metadata
+    }
+
+    nonisolated private static func metadataKey(for item: AVMetadataItem) -> String {
+        if let commonKey = item.commonKey?.rawValue, !commonKey.isEmpty {
+            return commonKey
+        }
+
+        if let identifier = item.identifier?.rawValue, !identifier.isEmpty {
+            return identifier
+        }
+
+        if let key = item.key as? String, !key.isEmpty {
+            return key
+        }
+
+        return "metadata"
+    }
+
+    nonisolated private static func stringValue(from item: AVMetadataItem) async -> String? {
+        if let stringValue = try? await item.load(.stringValue) {
+            return stringValue
+        }
+
+        if let numberValue = try? await item.load(.numberValue) {
+            return numberValue.stringValue
+        }
+
+        if let dateValue = try? await item.load(.dateValue) {
+            return ISO8601DateFormatter().string(from: dateValue)
+        }
+
+        return nil
     }
 }
 
