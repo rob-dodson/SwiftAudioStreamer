@@ -49,6 +49,8 @@ public struct AudioLevelMeterState: Sendable, Equatable {
     public var averagePower: Float
     public var peakPower: Float
 
+    public static let silence = Self(averagePower: -80, peakPower: -80)
+
     public init(averagePower: Float = 0, peakPower: Float = 0) {
         self.averagePower = averagePower
         self.peakPower = peakPower
@@ -173,4 +175,32 @@ struct QueuedPacket {
     var description: AudioStreamPacketDescription
     var packetCount: AVAudioPacketCount
     var frameCount: AVAudioFrameCount
+}
+
+extension InputStreamPosition {
+    var byteRangeHeader: String? {
+        guard start > 0 || end != nil else {
+            return nil
+        }
+
+        if let end {
+            return "bytes=\(start)-\(end)"
+        }
+
+        return "bytes=\(start)-"
+    }
+}
+
+extension HTTPURLResponse {
+    var totalContentLengthFromRange: Int64? {
+        guard
+            let contentRange = value(forHTTPHeaderField: "Content-Range"),
+            let totalString = contentRange.split(separator: "/").last,
+            totalString != "*"
+        else {
+            return nil
+        }
+
+        return Int64(totalString)
+    }
 }

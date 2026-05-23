@@ -3,7 +3,7 @@ import Foundation
 
 private final class AudioLevelMeterStore: @unchecked Sendable {
     private let lock = NSLock()
-    private var state = AudioLevelMeterState(averagePower: -80, peakPower: -80)
+    private var state = AudioLevelMeterState.silence
 
     func load() -> AudioLevelMeterState {
         lock.lock()
@@ -60,9 +60,6 @@ public final class EngineAudioQueue: AudioStreamRenderer {
     private var prepared = false
     private var scheduledBufferCount = 0
     private let maxScheduledBufferCount = 8
-
-    public init() {
-    }
 
     private func debugLog(_ message: String) {
         guard debugLoggingEnabled else {
@@ -174,7 +171,7 @@ public final class EngineAudioQueue: AudioStreamRenderer {
     public func stop(immediately: Bool) {
         guard prepared || engine.isRunning else {
             state = .idle
-            meterStore.store(.init(averagePower: -80, peakPower: -80))
+            resetMetering()
             return
         }
 
@@ -182,7 +179,7 @@ public final class EngineAudioQueue: AudioStreamRenderer {
         playerNode.removeTap(onBus: 0)
         engine.stop()
         scheduledBufferCount = 0
-        meterStore.store(.init(averagePower: -80, peakPower: -80))
+        resetMetering()
         state = .idle
         debugLog("queue stopped immediately=\(immediately)")
         delegate?.audioQueueStateChanged(.idle)
@@ -201,16 +198,20 @@ public final class EngineAudioQueue: AudioStreamRenderer {
         }
     }
 
+    private func resetMetering() {
+        meterStore.store(.silence)
+    }
+
     nonisolated private static func makeMeterState(from buffer: AVAudioPCMBuffer) -> AudioLevelMeterState {
         let frameLength = Int(buffer.frameLength)
         guard frameLength > 0 else {
-            return .init(averagePower: -80, peakPower: -80)
+            return .silence
         }
 
         switch buffer.format.commonFormat {
         case .pcmFormatFloat32:
             guard let channelData = buffer.floatChannelData else {
-                return .init(averagePower: -80, peakPower: -80)
+                return .silence
             }
             return makeMeterState(
                 channelCount: Int(buffer.format.channelCount),
@@ -220,7 +221,7 @@ public final class EngineAudioQueue: AudioStreamRenderer {
             }
         case .pcmFormatInt16:
             guard let channelData = buffer.int16ChannelData else {
-                return .init(averagePower: -80, peakPower: -80)
+                return .silence
             }
             return makeMeterState(
                 channelCount: Int(buffer.format.channelCount),
@@ -230,7 +231,7 @@ public final class EngineAudioQueue: AudioStreamRenderer {
             }
         case .pcmFormatInt32:
             guard let channelData = buffer.int32ChannelData else {
-                return .init(averagePower: -80, peakPower: -80)
+                return .silence
             }
             return makeMeterState(
                 channelCount: Int(buffer.format.channelCount),
@@ -239,7 +240,7 @@ public final class EngineAudioQueue: AudioStreamRenderer {
                 Float(channelData[channel][frame]) / Float(Int32.max)
             }
         default:
-            return .init(averagePower: -80, peakPower: -80)
+            return .silence
         }
     }
 

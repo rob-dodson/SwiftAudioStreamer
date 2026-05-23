@@ -51,23 +51,14 @@ public final class URLSessionInputStream: NSObject, AudioStreamSource {
         debugLog("opening url=\(url.absoluteString) position.start=\(position?.start ?? 0) position.end=\(position?.end.map(String.init) ?? "nil")")
 
         self.position = position ?? InputStreamPosition()
-        readySignaled = false
-        completionDelivered = false
-        metadataByteCount = 0
-        icyMetadataInterval = 0
-        audioBytesUntilMetadata = 0
-        metadataBytesRemaining = 0
-        icyMetadataBuffer.removeAll(keepingCapacity: false)
-        lastMetadata.removeAll(keepingCapacity: false)
-        pendingChunks.removeAll(keepingCapacity: false)
-        receivingEnabled = true
+        resetOpenState()
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         request.setValue("1", forHTTPHeaderField: "Icy-MetaData")
 
-        if let rangeValue = byteRangeHeader(for: self.position) {
+        if let rangeValue = self.position.byteRangeHeader {
             request.setValue(rangeValue, forHTTPHeaderField: "Range")
         }
 
@@ -101,22 +92,8 @@ public final class URLSessionInputStream: NSObject, AudioStreamSource {
         let chunks = pendingChunks
         pendingChunks.removeAll(keepingCapacity: false)
         for chunk in chunks {
-            await MainActor.run {
-                delegate?.stream(self, hasBytesAvailable: chunk)
-            }
+            delegate?.stream(self, hasBytesAvailable: chunk)
         }
-    }
-
-    private func byteRangeHeader(for position: InputStreamPosition) -> String? {
-        guard position.start > 0 || position.end != nil else {
-            return nil
-        }
-
-        if let end = position.end {
-            return "bytes=\(position.start)-\(end)"
-        }
-
-        return "bytes=\(position.start)-"
     }
 
     private func finishOpenIfNeeded() {
@@ -138,19 +115,26 @@ public final class URLSessionInputStream: NSObject, AudioStreamSource {
         }
     }
 
+    private func resetOpenState() {
+        readySignaled = false
+        completionDelivered = false
+        metadataByteCount = 0
+        icyMetadataInterval = 0
+        audioBytesUntilMetadata = 0
+        metadataBytesRemaining = 0
+        icyMetadataBuffer.removeAll(keepingCapacity: false)
+        lastMetadata.removeAll(keepingCapacity: false)
+        pendingChunks.removeAll(keepingCapacity: false)
+        receivingEnabled = true
+    }
+
     private func deliverChunk(_ data: Data) {
         if icyMetadataInterval > 0 {
             processICYData(data)
             return
         }
 
-        if receivingEnabled {
-            debugLog("delivering chunk size=\(data.count)")
-            delegate?.stream(self, hasBytesAvailable: data)
-        } else {
-            debugLog("buffering chunk size=\(data.count) because receiving is disabled")
-            pendingChunks.append(data)
-        }
+        enqueueOrDeliver(data, description: "chunk")
     }
 
     private func updateMetadata(from response: URLResponse) {
@@ -173,8 +157,7 @@ public final class URLSessionInputStream: NSObject, AudioStreamSource {
                 debugLog("icy metadata interval=\(interval)")
             }
 
-            if let contentRange = httpResponse.value(forHTTPHeaderField: "Content-Range"),
-               let total = parseContentRange(contentRange) {
+            if let total = httpResponse.totalContentLengthFromRange {
                 contentLength = total
             }
 
@@ -198,14 +181,6 @@ public final class URLSessionInputStream: NSObject, AudioStreamSource {
         delegate?.stream(self, metadataByteSizeAvailable: metadataByteCount)
         delegate?.streamIsReadyRead(self)
         finishOpenIfNeeded()
-    }
-
-    private func parseContentRange(_ header: String) -> Int64? {
-        guard let totalString = header.split(separator: "/").last, totalString != "*" else {
-            return nil
-        }
-
-        return Int64(totalString)
     }
 
     private func processICYData(_ data: Data) {
@@ -244,13 +219,7 @@ public final class URLSessionInputStream: NSObject, AudioStreamSource {
             return
         }
 
-        if receivingEnabled {
-            debugLog("delivering audio chunk size=\(audioOutput.count) after stripping ICY metadata")
-            delegate?.stream(self, hasBytesAvailable: audioOutput)
-        } else {
-            debugLog("buffering audio chunk size=\(audioOutput.count) because receiving is disabled")
-            pendingChunks.append(audioOutput)
-        }
+        enqueueOrDeliver(audioOutput, description: "audio chunk", suffix: "after stripping ICY metadata")
     }
 
     private func emitICYMetadataIfNeeded() {
@@ -299,6 +268,17 @@ public final class URLSessionInputStream: NSObject, AudioStreamSource {
         lastMetadata = metadata
         debugLog("parsed ICY metadata keys=\(metadata.keys.sorted())")
         delegate?.stream(self, metadataAvailable: metadata)
+    }
+
+    private func enqueueOrDeliver(_ data: Data, description: String, suffix: String = "") {
+        let suffixText = suffix.isEmpty ? "" : " \(suffix)"
+        if receivingEnabled {
+            debugLog("delivering \(description) size=\(data.count)\(suffixText)")
+            delegate?.stream(self, hasBytesAvailable: data)
+        } else {
+            debugLog("buffering \(description) size=\(data.count) because receiving is disabled\(suffixText)")
+            pendingChunks.append(data)
+        }
     }
 }
 

@@ -20,11 +20,9 @@ final class HarnessAudioStreamSource: AudioStreamSource {
         }
     }
 
-    func close() async {
-    }
+    func close() async {}
 
-    func setReceivingEnabled(_ enabled: Bool) async {
-    }
+    func setReceivingEnabled(_ enabled: Bool) async {}
 
     private func loadMetadata(url: URL, position: InputStreamPosition?) async throws {
         var request = URLRequest(url: url)
@@ -63,30 +61,16 @@ final class HarnessAudioStreamSource: AudioStreamSource {
         let expectedLength = response.expectedContentLength
         if expectedLength > 0 {
             contentLength = expectedLength
-        } else if let contentRange = httpResponse.value(forHTTPHeaderField: "Content-Range") {
-            contentLength = parseContentRange(contentRange)
         } else {
-            contentLength = nil
+            contentLength = httpResponse.totalContentLengthFromRange
         }
     }
 
     private func applyRange(_ position: InputStreamPosition?, to request: inout URLRequest) {
-        guard let position, position.start > 0 || position.end != nil else {
+        guard let rangeValue = position?.byteRangeHeader else {
             return
         }
 
-        if let end = position.end {
-            request.setValue("bytes=\(position.start)-\(end)", forHTTPHeaderField: "Range")
-        } else {
-            request.setValue("bytes=\(position.start)-", forHTTPHeaderField: "Range")
-        }
-    }
-
-    private func parseContentRange(_ header: String) -> Int64? {
-        guard let totalString = header.split(separator: "/").last, totalString != "*" else {
-            return nil
-        }
-
-        return Int64(totalString)
+        request.setValue(rangeValue, forHTTPHeaderField: "Range")
     }
 }

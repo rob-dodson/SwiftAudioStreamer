@@ -55,23 +55,14 @@ private func loadPlaylistString(from url: URL) async throws -> String {
     return String(decoding: data, as: UTF8.self)
 }
 
-private func parsePLS(from url: URL) async throws -> [URL] {
+private func parsePlaylist(from url: URL, transform: (String) -> URL?) async throws -> [URL] {
     let playlist = try await loadPlaylistString(from: url)
-    var resolvedURLs: [URL] = []
-
-    for rawLine in playlist.components(separatedBy: .newlines) {
-        let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard line.lowercased().hasPrefix("file") else {
-            continue
+    let resolvedURLs = playlist
+        .components(separatedBy: .newlines)
+        .compactMap { rawLine in
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            return transform(line)
         }
-
-        let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
-        guard parts.count == 2, let streamURL = URL(string: parts[1]) else {
-            continue
-        }
-
-        resolvedURLs.append(streamURL)
-    }
 
     guard !resolvedURLs.isEmpty else {
         throw HarnessInputError.emptyPlaylist(url)
@@ -80,24 +71,40 @@ private func parsePLS(from url: URL) async throws -> [URL] {
     return resolvedURLs
 }
 
-private func parseM3U(from url: URL) async throws -> [URL] {
-    let playlist = try await loadPlaylistString(from: url)
-    var resolvedURLs: [URL] = []
-
-    for rawLine in playlist.components(separatedBy: .newlines) {
-        let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !line.isEmpty, !line.hasPrefix("#"), let streamURL = URL(string: line) else {
-            continue
+private func parsePLS(from url: URL) async throws -> [URL] {
+    try await parsePlaylist(from: url) { line in
+        guard line.lowercased().hasPrefix("file") else {
+            return nil
         }
 
-        resolvedURLs.append(streamURL)
-    }
+        let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else {
+            return nil
+        }
 
-    guard !resolvedURLs.isEmpty else {
-        throw HarnessInputError.emptyPlaylist(url)
+        return URL(string: parts[1])
     }
+}
 
-    return resolvedURLs
+private func parseM3U(from url: URL) async throws -> [URL] {
+    try await parsePlaylist(from: url) { line in
+        guard !line.isEmpty, !line.hasPrefix("#") else {
+            return nil
+        }
+
+        return URL(string: line)
+    }
+}
+
+private func firstPlayableURL(for url: URL) async throws -> URL {
+    switch url.pathExtension.lowercased() {
+    case "pls":
+        return try await parsePLS(from: url)[0]
+    case "m3u":
+        return try await parseM3U(from: url)[0]
+    default:
+        return url
+    }
 }
 
 private func resolvePlayableURLs(from arguments: [String]) async throws -> [URL] {
@@ -108,16 +115,7 @@ private func resolvePlayableURLs(from arguments: [String]) async throws -> [URL]
             throw HarnessInputError.invalidInput(argument)
         }
 
-        switch url.pathExtension.lowercased() {
-        case "pls":
-            let playlistURLs = try await parsePLS(from: url)
-            resolved.append(playlistURLs[0])
-        case "m3u":
-            let playlistURLs = try await parseM3U(from: url)
-            resolved.append(playlistURLs[0])
-        default:
-            resolved.append(url)
-        }
+        resolved.append(try await firstPlayableURL(for: url))
     }
 
     return resolved
@@ -125,11 +123,19 @@ private func resolvePlayableURLs(from arguments: [String]) async throws -> [URL]
 
 @MainActor
 final class StreamHarness: NSObject, AudioStreamDelegate, @preconcurrency AVPlayerItemMetadataOutputPushDelegate {
+    private static let preferredMetadataKeys = [
+        "StreamTitle",
+        "StreamUrl",
+        "IcecastStationName",
+        "icy-name",
+        "icy-genre",
+        "icy-url"
+    ]
+
     private let audioStream: AudioStream
     private var hlsPlayer: AVPlayer?
     private var hlsPlayerItemObservation: NSKeyValueObservation?
     private var hlsPlayerFailureObserver: NSObjectProtocol?
-    private var hlsMetadataOutput: AVPlayerItemMetadataOutput?
     private var volume: Float = 1.0
     private var stopSignal: DispatchSourceSignal?
     private var finishContinuation: CheckedContinuation<Int32, Never>?
@@ -175,15 +181,7 @@ final class StreamHarness: NSObject, AudioStreamDelegate, @preconcurrency AVPlay
                         if Self.isHLSURL(url) {
                             try await self.playHLS(url: url, playDuration: playDuration, printPowerLevels: printPowerLevels)
                         } else {
-                            self.audioStream.setURL(url)
-                            await self.audioStream.open()
-                            if printPowerLevels {
-                                self.startPowerLevelLogging()
-                            }
-
-                            try await Task.sleep(nanoseconds: UInt64(playDuration * 1_000_000_000))
-                            self.stopPowerLevelLogging()
-                            await self.audioStream.close()
+                            try await self.playStream(url: url, playDuration: playDuration, printPowerLevels: printPowerLevels)
                         }
                     } catch {
                         if error is CancellationError {
@@ -230,35 +228,9 @@ final class StreamHarness: NSObject, AudioStreamDelegate, @preconcurrency AVPlay
             return
         }
 
-        let preferredKeys = [
-            "StreamTitle",
-            "StreamUrl",
-            "IcecastStationName",
-            "icy-name",
-            "icy-genre",
-            "icy-url"
-        ]
-
-        for key in preferredKeys {
-            guard let value = metadata[key], !value.isEmpty else {
-                continue
-            }
-
-            if lastPrintedMetadata[key] != value {
-                print("\(key): \(value)")
-                lastPrintedMetadata[key] = value
-            }
-        }
-
-        for key in metadata.keys.sorted() where !preferredKeys.contains(key) {
-            guard let value = metadata[key], !value.isEmpty else {
-                continue
-            }
-
-            if lastPrintedMetadata[key] != value {
-                print("\(key): \(value)")
-                lastPrintedMetadata[key] = value
-            }
+        let orderedKeys = Self.preferredMetadataKeys + metadata.keys.sorted().filter { !Self.preferredMetadataKeys.contains($0) }
+        for key in orderedKeys {
+            printMetadataValue(metadata[key], forKey: key)
         }
     }
 
@@ -333,6 +305,25 @@ final class StreamHarness: NSObject, AudioStreamDelegate, @preconcurrency AVPlay
         powerTask = nil
     }
 
+    private func playStream(url: URL, playDuration: TimeInterval, printPowerLevels: Bool) async throws {
+        audioStream.setURL(url)
+        await audioStream.open()
+        if printPowerLevels {
+            startPowerLevelLogging()
+        }
+
+        do {
+            try await sleep(for: playDuration)
+        } catch {
+            stopPowerLevelLogging()
+            await audioStream.close()
+            throw error
+        }
+
+        stopPowerLevelLogging()
+        await audioStream.close()
+    }
+
     private func playHLS(url: URL, playDuration: TimeInterval, printPowerLevels: Bool) async throws {
         stopHLSPlayback()
 
@@ -353,7 +344,7 @@ final class StreamHarness: NSObject, AudioStreamDelegate, @preconcurrency AVPlay
         player.play()
 
         do {
-            try await Task.sleep(nanoseconds: UInt64(playDuration * 1_000_000_000))
+            try await sleep(for: playDuration)
         } catch {
             stopHLSPlayback()
             throw error
@@ -380,13 +371,11 @@ final class StreamHarness: NSObject, AudioStreamDelegate, @preconcurrency AVPlay
         let metadataOutput = AVPlayerItemMetadataOutput(identifiers: nil)
         metadataOutput.setDelegate(self, queue: .main)
         playerItem.add(metadataOutput)
-        hlsMetadataOutput = metadataOutput
     }
 
     private func stopHLSPlayback() {
         hlsPlayerItemObservation?.invalidate()
         hlsPlayerItemObservation = nil
-        hlsMetadataOutput = nil
 
         if let hlsPlayerFailureObserver {
             NotificationCenter.default.removeObserver(hlsPlayerFailureObserver)
@@ -507,6 +496,19 @@ final class StreamHarness: NSObject, AudioStreamDelegate, @preconcurrency AVPlay
 
         return nil
     }
+
+    private func printMetadataValue(_ value: String?, forKey key: String) {
+        guard let value, !value.isEmpty, lastPrintedMetadata[key] != value else {
+            return
+        }
+
+        print("\(key): \(value)")
+        lastPrintedMetadata[key] = value
+    }
+
+    private func sleep(for duration: TimeInterval) async throws {
+        try await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+    }
 }
 
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -561,27 +563,24 @@ guard !positionalArguments.isEmpty else {
     Darwin.exit(2)
 }
 
-var urls: [URL] = []
-
 Task { @MainActor in
     if debugLoggingEnabled {
         fputs("[main] starting swift-audio-streamer\n", stderr)
     }
 
     do {
-        urls = try await resolvePlayableURLs(from: positionalArguments)
+        let urls = try await resolvePlayableURLs(from: positionalArguments)
+        let harness = StreamHarness(debugLoggingEnabled: debugLoggingEnabled)
+        harness.setVolume(volume)
+        let exitCode = await harness.run(urls: urls, playDuration: playDuration, printPowerLevels: printPowerLevels)
+        if debugLoggingEnabled {
+            fputs("[main] exiting with code \(exitCode)\n", stderr)
+        }
+        Darwin.exit(exitCode)
     } catch {
         fputs("\(error.localizedDescription)\n", stderr)
         Darwin.exit(2)
     }
-
-    let harness = StreamHarness(debugLoggingEnabled: debugLoggingEnabled)
-    harness.setVolume(volume)
-    let exitCode = await harness.run(urls: urls, playDuration: playDuration, printPowerLevels: printPowerLevels)
-    if debugLoggingEnabled {
-        fputs("[main] exiting with code \(exitCode)\n", stderr)
-    }
-    Darwin.exit(exitCode)
 }
 
 dispatchMain()

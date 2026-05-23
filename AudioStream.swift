@@ -293,9 +293,7 @@ public final class AudioStream {
         return InputStreamPosition(start: start, end: contentLength)
     }
 
-    public var currentVolume: Float {
-        outputVolume
-    }
+    public var currentVolume: Float { outputVolume }
 
     public func setVolume(_ volume: Float) {
         let clamped = max(0, min(volume, 1))
@@ -326,9 +324,7 @@ public final class AudioStream {
         preloading = enabled
     }
 
-    public var isPreloading: Bool {
-        preloading
-    }
+    public var isPreloading: Bool { preloading }
 
     public func setOutputFile(_ url: URL?) {
         outputFileURL = url
@@ -353,9 +349,7 @@ public final class AudioStream {
         return "FSCache-\(hex)"
     }
 
-    public var cachedDataSize: Int {
-        cachedDataByteCount
-    }
+    public var cachedDataSize: Int { cachedDataByteCount }
 
     public var bitrate: Double {
         if bitRate > 0 {
@@ -377,13 +371,9 @@ public final class AudioStream {
         return contentLengthStorage
     }
 
-    public var playbackDataCount: Int {
-        max(queuedPackets.count - playPacketIndex - packetsToRewind, 0)
-    }
+    public var playbackDataCount: Int { max(queuedPackets.count - playPacketIndex - packetsToRewind, 0) }
 
-    public var levels: AudioLevelMeterState {
-        renderer?.levels ?? .init()
-    }
+    public var levels: AudioLevelMeterState { renderer?.levels ?? .init() }
 
     public func rendererStateChanged(_ rendererState: AudioRendererState) {
         debugLog("renderer state changed -> \(rendererState)")
@@ -428,8 +418,7 @@ public final class AudioStream {
         closeAndSignalError(.streamParse, description: error.localizedDescription)
     }
 
-    public func rendererFinishedPlayingPacket() {
-    }
+    public func rendererFinishedPlayingPacket() {}
 
     public func sourceDidBecomeReady() {
         guard !parserRunning else {
@@ -548,14 +537,10 @@ public final class AudioStream {
 
     public func setSourceFormat(_ format: AVAudioFormat) {
         sourceFormat = format
-        packetDuration = {
-            let framesPerPacket = format.streamDescription.pointee.mFramesPerPacket
-            guard framesPerPacket > 0 else {
-                return 0
-            }
-
-            return Double(framesPerPacket) / format.sampleRate
-        }()
+        packetDuration = packetDuration(
+            for: format.streamDescription.pointee.mFramesPerPacket,
+            sampleRate: format.sampleRate
+        )
         debugLog("source format sampleRate=\(format.sampleRate) channels=\(format.channelCount)")
     }
 
@@ -574,12 +559,13 @@ public final class AudioStream {
     }
 
     public func appendEstimatedBitrate(_ bitrate: Double) {
+        let maxSamples = 50
         bitrateSamples.append(bitrate)
-        if bitrateSamples.count > 50 {
-            bitrateSamples.removeFirst(bitrateSamples.count - 50)
+        if bitrateSamples.count > maxSamples {
+            bitrateSamples.removeFirst(bitrateSamples.count - maxSamples)
         }
 
-        if bitrateSamples.count == 50 {
+        if bitrateSamples.count == maxSamples {
             debugLog("estimated bitrate ready=\(self.bitrate)")
             delegate?.audioStreamBitrateBecameAvailable(self)
         }
@@ -597,10 +583,11 @@ public final class AudioStream {
         decoderShouldRun = shouldRun
         if shouldRun {
             startDecodeLoopIfNeeded()
-        } else {
-            decodeTask?.cancel()
-            decodeTask = nil
+            return
         }
+
+        decodeTask?.cancel()
+        decodeTask = nil
     }
 
     private func resetForOpen(position: InputStreamPosition?) {
@@ -628,11 +615,7 @@ public final class AudioStream {
             packetIdentifier = 0
         }
 
-        if position == nil {
-            initialBufferingCompleted = false
-        } else {
-            initialBufferingCompleted = false
-        }
+        initialBufferingCompleted = false
     }
 
     private func closeRenderer() {
@@ -690,21 +673,17 @@ public final class AudioStream {
         watchdogTask = nil
     }
 
-    private var cachedDataCount: Int {
-        queuedPackets.count
-    }
+    private var cachedDataCount: Int { queuedPackets.count }
 
     private func determineBufferingLimits() {
         guard !preloading else {
             return
         }
 
-        let minimumBytes: Int
-        if contentLength > 0 {
-            minimumBytes = configuration.requiredInitialPrebufferedByteCountForNonContinuousStream
-        } else {
-            minimumBytes = configuration.requiredInitialPrebufferedByteCountForContinuousStream
-        }
+        let minimumBytes =
+            contentLength > 0
+            ? configuration.requiredInitialPrebufferedByteCountForNonContinuousStream
+            : configuration.requiredInitialPrebufferedByteCountForContinuousStream
 
         let hasEnoughData = cachedDataByteCount >= minimumBytes || queuedPackets.count >= configuration.requiredInitialPrebufferedPacketCount
         debugLog("buffer check cachedBytes=\(cachedDataByteCount) queuedPackets=\(queuedPackets.count) minBytes=\(minimumBytes) minPackets=\(configuration.requiredInitialPrebufferedPacketCount) hasEnough=\(hasEnoughData)")
@@ -770,7 +749,7 @@ public final class AudioStream {
             return false
         }
 
-        return contentType.hasPrefix("audio/") || contentType.hasPrefix("video/")
+        return ["audio/", "video/"].contains { contentType.hasPrefix($0) }
     }
 
     private func audioStreamType(from contentType: String?) -> AudioFileTypeID {
@@ -799,7 +778,7 @@ public final class AudioStream {
     fileprivate func configureConverter(with asbd: AudioStreamBasicDescription) throws {
         var sourceASBD = asbd
         sourceFormat = AVAudioFormat(streamDescription: &sourceASBD)
-        packetDuration = asbd.mFramesPerPacket > 0 ? Double(asbd.mFramesPerPacket) / Double(asbd.mSampleRate) : 0
+        packetDuration = packetDuration(for: asbd.mFramesPerPacket, sampleRate: asbd.mSampleRate)
         debugLog("configuring converter formatID=\(asbd.mFormatID) sampleRate=\(asbd.mSampleRate) channels=\(asbd.mChannelsPerFrame) framesPerPacket=\(asbd.mFramesPerPacket)")
 
         let outputFormat = AVAudioFormat(
@@ -1200,6 +1179,14 @@ public final class AudioStream {
         }
 
         return noErr
+    }
+
+    private func packetDuration(for framesPerPacket: UInt32, sampleRate: Double) -> Double {
+        guard framesPerPacket > 0 else {
+            return 0
+        }
+
+        return Double(framesPerPacket) / sampleRate
     }
 }
 
