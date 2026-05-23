@@ -6,6 +6,8 @@ SOURCES := \
 	AudioStream.swift \
 	InputStream.swift \
 	AudioQueue.swift \
+	HarnessSupport.swift \
+	StreamHarness.swift \
 	main.swift
 
 .PHONY: all run clean typecheck
