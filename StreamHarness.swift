@@ -44,7 +44,12 @@ final class StreamHarness: NSObject, AudioStreamDelegate, @preconcurrency AVPlay
         audioStream.delegate = self
     }
 
-    func run(urls: [URL], playDuration: TimeInterval = 5, printPowerLevels: Bool = false) async -> Int32 {
+    func run(
+        urls: [URL],
+        playDuration: TimeInterval = 5,
+        printPowerLevels: Bool = false,
+        forceAVPlayer: Bool = false
+    ) async -> Int32 {
         guard !urls.isEmpty else {
             return 2
         }
@@ -60,8 +65,13 @@ final class StreamHarness: NSObject, AudioStreamDelegate, @preconcurrency AVPlay
                     self.lastPrintedMetadata.removeAll(keepingCapacity: true)
                     print("playing [\(index + 1)/\(urls.count)]: \(url.absoluteString)")
                     do {
-                        if Self.isHLSURL(url) {
-                            try await self.playHLS(url: url, playDuration: playDuration, printPowerLevels: printPowerLevels)
+                        if forceAVPlayer || Self.isHLSURL(url) {
+                            try await self.playAVPlayer(
+                                url: url,
+                                playDuration: playDuration,
+                                printPowerLevels: printPowerLevels,
+                                isHLS: Self.isHLSURL(url)
+                            )
                         } else {
                             try await self.playStream(url: url, playDuration: playDuration, printPowerLevels: printPowerLevels)
                         }
@@ -206,11 +216,17 @@ final class StreamHarness: NSObject, AudioStreamDelegate, @preconcurrency AVPlay
         await audioStream.close()
     }
 
-    private func playHLS(url: URL, playDuration: TimeInterval, printPowerLevels: Bool) async throws {
+    private func playAVPlayer(url: URL, playDuration: TimeInterval, printPowerLevels: Bool, isHLS: Bool) async throws {
+
+		print("Using AVPlayer")
+
+        if isHLS {
+            print("HLS Stream")
+        }
         stopHLSPlayback()
 
         if printPowerLevels {
-            print("power metering unavailable for HLS playback")
+            print("power metering unavailable for AVPlayer playback")
         }
 
         let playerItem = AVPlayerItem(url: url)
@@ -237,7 +253,7 @@ final class StreamHarness: NSObject, AudioStreamDelegate, @preconcurrency AVPlay
 
     private func installHLSFailureObserver(for playerItem: AVPlayerItem) {
         hlsPlayerFailureObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemFailedToPlayToEndTime,
+            forName: AVPlayerItem.failedToPlayToEndTimeNotification,
             object: playerItem,
             queue: .main
         ) { [weak self] notification in

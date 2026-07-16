@@ -6,6 +6,7 @@ var debugLoggingEnabled = false
 var volume: Float = 1.0
 var playDuration: TimeInterval = 5
 var printPowerLevels = false
+var forceAVPlayer = false
 var positionalArguments: [String] = []
 
 var argumentIndex = 0
@@ -17,6 +18,9 @@ while argumentIndex < arguments.count {
         argumentIndex += 1
     case "--power":
         printPowerLevels = true
+        argumentIndex += 1
+    case "--avplayer":
+        forceAVPlayer = true
         argumentIndex += 1
     case "--volume":
         let valueIndex = argumentIndex + 1
@@ -49,7 +53,7 @@ while argumentIndex < arguments.count {
 }
 
 guard !positionalArguments.isEmpty else {
-    fputs("usage: swift-audio-streamer [--debug] [--power] [--volume 0.0-1.0] [--play-duration seconds] <stream-url> [stream-url ...]\n", stderr)
+    fputs("usage: swift-audio-streamer [--debug] [--power] [--avplayer] [--volume 0.0-1.0] [--play-duration seconds] <stream-url> [stream-url ...]\n", stderr)
     Darwin.exit(2)
 }
 
@@ -62,7 +66,12 @@ Task { @MainActor in
         let urls = try await HarnessSupport.resolvePlayableURLs(from: positionalArguments)
         let harness = StreamHarness(debugLoggingEnabled: debugLoggingEnabled)
         harness.setVolume(volume)
-        let exitCode = await harness.run(urls: urls, playDuration: playDuration, printPowerLevels: printPowerLevels)
+        let exitCode = await harness.run(
+            urls: urls,
+            playDuration: playDuration,
+            printPowerLevels: printPowerLevels,
+            forceAVPlayer: forceAVPlayer
+        )
         if debugLoggingEnabled {
             fputs("[main] exiting with code \(exitCode)\n", stderr)
         }

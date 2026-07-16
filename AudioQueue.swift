@@ -81,10 +81,10 @@ public final class EngineAudioQueue: AudioStreamRenderer {
 
         self.outputFormat = outputFormat
         engine.attach(playerNode)
-        engine.connect(playerNode, to: engine.mainMixerNode, format: outputFormat)
-        installLevelTap(format: outputFormat)
 
         do {
+            try engine.connectNode(playerNode, to: engine.mainMixerNode, format: outputFormat)
+            try installLevelTap(format: outputFormat)
             try engine.start()
             prepared = true
             state = .idle
@@ -141,8 +141,14 @@ public final class EngineAudioQueue: AudioStreamRenderer {
         }
 
         if !playerNode.isPlaying {
-            playerNode.play()
-            debugLog("player node started")
+            do {
+                try playerNode.playAudio(at: nil)
+                debugLog("player node started")
+            } catch {
+                debugLog("player node start failed: \(error.localizedDescription)")
+                delegate?.audioQueueInitializationFailed(error)
+                return
+            }
         }
 
         if state != .running {
@@ -160,8 +166,14 @@ public final class EngineAudioQueue: AudioStreamRenderer {
             playerNode.pause()
             debugLog("player node paused")
         } else {
-            playerNode.play()
-            debugLog("player node resumed")
+            do {
+                try playerNode.playAudio(at: nil)
+                debugLog("player node resumed")
+            } catch {
+                debugLog("player node resume failed: \(error.localizedDescription)")
+                delegate?.audioQueueInitializationFailed(error)
+                return
+            }
         }
 
         state = playerNode.isPlaying ? .running : .paused
@@ -190,10 +202,10 @@ public final class EngineAudioQueue: AudioStreamRenderer {
         }
     }
 
-    private func installLevelTap(format: AVAudioFormat) {
+    private func installLevelTap(format: AVAudioFormat) throws {
         playerNode.removeTap(onBus: 0)
         let meterStore = self.meterStore
-        playerNode.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in
+        try playerNode.installAudioTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in
             meterStore.store(Self.makeMeterState(from: buffer))
         }
     }
@@ -202,45 +214,23 @@ public final class EngineAudioQueue: AudioStreamRenderer {
         meterStore.store(.silence)
     }
 
-    nonisolated private static func makeMeterState(from buffer: AVAudioPCMBuffer) -> AudioLevelMeterState {
-        let frameLength = Int(buffer.frameLength)
+    nonisolated private static func makeMeterState(from buffer: AVReadOnlyAudioPCMBuffer) -> AudioLevelMeterState {
+        let frameLength = buffer.frameLength
         guard frameLength > 0 else {
             return .silence
         }
 
-        switch buffer.format.commonFormat {
-        case .pcmFormatFloat32:
-            guard let channelData = buffer.floatChannelData else {
-                return .silence
+        return makeMeterState(channelCount: Int(buffer.format.channelCount), frameLength: frameLength) { channel, frame in
+            switch buffer.channelData(channel) {
+            case let .float(samples):
+                return samples[frame]
+            case let .int16(samples):
+                return Float(samples[frame]) / Float(Int16.max)
+            case let .int32(samples):
+                return Float(samples[frame]) / Float(Int32.max)
+            @unknown default:
+                return 0
             }
-            return makeMeterState(
-                channelCount: Int(buffer.format.channelCount),
-                frameLength: frameLength
-            ) { channel, frame in
-                Float(channelData[channel][frame])
-            }
-        case .pcmFormatInt16:
-            guard let channelData = buffer.int16ChannelData else {
-                return .silence
-            }
-            return makeMeterState(
-                channelCount: Int(buffer.format.channelCount),
-                frameLength: frameLength
-            ) { channel, frame in
-                Float(channelData[channel][frame]) / Float(Int16.max)
-            }
-        case .pcmFormatInt32:
-            guard let channelData = buffer.int32ChannelData else {
-                return .silence
-            }
-            return makeMeterState(
-                channelCount: Int(buffer.format.channelCount),
-                frameLength: frameLength
-            ) { channel, frame in
-                Float(channelData[channel][frame]) / Float(Int32.max)
-            }
-        default:
-            return .silence
         }
     }
 
