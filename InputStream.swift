@@ -1,3 +1,6 @@
+// URLSessionInputStream is the network-backed AudioStreamSource for AudioStream. It
+// fetches bytes with URLSession, strips ICY metadata, reports response metadata, and
+// feeds audio data into AudioStream through InputStreamDelegate callbacks.
 import Foundation
 
 @MainActor

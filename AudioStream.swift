@@ -1,3 +1,7 @@
+// AudioStream owns the custom streaming pipeline: source input, AudioFileStream parsing,
+// packet buffering, decoding, and renderer coordination. It connects AudioStreamSource
+// implementations such as URLSessionInputStream to AudioStreamRenderer implementations
+// such as EngineAudioQueue, and reports playback state through AudioStreamDelegate.
 import AVFoundation
 import AudioToolbox
 import CryptoKit

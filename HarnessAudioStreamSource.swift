@@ -1,3 +1,6 @@
+// HarnessAudioStreamSource is a lightweight AudioStreamSource used by harness tooling
+// to probe stream metadata and content length. It shares support types with AudioStream
+// but does not deliver audio bytes to the decoder pipeline.
 import Foundation
 
 final class HarnessAudioStreamSource: AudioStreamSource {

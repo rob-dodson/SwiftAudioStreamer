@@ -1,3 +1,6 @@
+// HarnessSupport contains command-line support code shared by main.swift and
+// StreamHarness setup. It validates input URLs, expands local files, and resolves
+// PLS/M3U playlists into playable stream URLs.
 import Foundation
 
 enum HarnessInputError: LocalizedError {

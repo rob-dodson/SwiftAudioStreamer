@@ -1,3 +1,6 @@
+// StreamHarness coordinates command-line playback. It uses AudioStream for the custom
+// decoder path, AVPlayer for HLS or forced AVPlayer playback, and prints state,
+// metadata, and optional power-level output for main.swift.
 import AVFoundation
 import Dispatch
 import Darwin

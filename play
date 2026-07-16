@@ -1,8 +1,8 @@
 ./swift-audio-streamer --avplayer --play-duration 15  https://api.somafm.com/cliqhop130.pls   https://stream.americanrootsradio.com:3045/stream
 
-#./swift-audio-streamer --volume 1 --play-duration 2 --power \
-	#https://hls.somafm.com/hls/groovesalad/128k/program.m3u8 \
-	#https://api.somafm.com/cliqhop130.pls \
-	#https://ice6.somafm.com/bossa-128-aac \
-	#https://ice2.somafm.com/suburbsofgoa-128-mp3 \
-	#https://ice6.somafm.com/reggae-256-mp3 \
+#./swift-audio-streamer --volume 1 --play-duration 7 --power \
+	https://hls.somafm.com/hls/groovesalad/128k/program.m3u8 \
+	https://api.somafm.com/cliqhop130.pls \
+	https://ice6.somafm.com/bossa-128-aac \
+	https://ice2.somafm.com/suburbsofgoa-128-mp3 \
+	https://ice6.somafm.com/reggae-256-mp3 \

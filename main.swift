@@ -1,3 +1,6 @@
+// main.swift is the command-line entry point. It parses CLI options, resolves playable
+// URLs through HarnessSupport, and starts StreamHarness to drive either AudioStream or
+// AVPlayer playback.
 import Darwin
 import Foundation
 

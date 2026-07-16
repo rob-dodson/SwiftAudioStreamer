@@ -1,3 +1,6 @@
+// EngineAudioQueue is the AVAudioEngine-backed AudioStreamRenderer used by AudioStream.
+// It schedules decoded PCM buffers on an AVAudioPlayerNode and reports playback state,
+// buffer drain events, and pre-mix power levels back through AudioQueueDelegate.
 import AVFoundation
 import Foundation
 

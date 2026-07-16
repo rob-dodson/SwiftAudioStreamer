@@ -1,3 +1,6 @@
+// AudioStreamSupport defines the shared data models, protocols, and helpers used by the
+// streaming stack. AudioStream, URLSessionInputStream, EngineAudioQueue, and the harness
+// classes communicate through these protocols and value types.
 import AVFoundation
 import AudioToolbox
 import Foundation
