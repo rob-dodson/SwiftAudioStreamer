@@ -1010,7 +1010,6 @@ public final class AudioStream {
 
     fileprivate func cleanupCachedData() {
         debugLog("cleanupCachedData skipped playPacketIndex=\(playPacketIndex) queuedPackets=\(queuedPackets.count)")
-        return
 
         guard playPacketIndex > 0 else {
             return
