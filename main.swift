@@ -10,6 +10,8 @@ var volume: Float = 1.0
 var playDuration: TimeInterval = 5
 var printPowerLevels = false
 var forceAVPlayer = false
+var skipURLParsing = false
+var noLoop = false
 var positionalArguments: [String] = []
 
 var argumentIndex = 0
@@ -22,8 +24,14 @@ while argumentIndex < arguments.count {
     case "--power":
         printPowerLevels = true
         argumentIndex += 1
+    case "--noloop":
+        noLoop = true
+        argumentIndex += 1
     case "--avplayer":
         forceAVPlayer = true
+        argumentIndex += 1
+    case "--noparse":
+        skipURLParsing = true
         argumentIndex += 1
     case "--volume":
         let valueIndex = argumentIndex + 1
@@ -37,6 +45,9 @@ while argumentIndex < arguments.count {
         }
         volume = parsedVolume
         argumentIndex += 2
+    case "--help","-?":
+		print(HarnessSupport.usage)
+        argumentIndex += 1
     case "--play-duration":
         let valueIndex = argumentIndex + 1
         guard valueIndex < arguments.count else {
@@ -56,7 +67,7 @@ while argumentIndex < arguments.count {
 }
 
 guard !positionalArguments.isEmpty else {
-    fputs("usage: swift-audio-streamer [--debug] [--power] [--avplayer] [--volume 0.0-1.0] [--play-duration seconds] <stream-url> [stream-url ...]\n", stderr)
+    fputs("usage: swift-audio-streamer [--debug] [--power] [--avplayer] [--noparse] [--noloop] [--volume 0.0-1.0] [--play-duration seconds] <stream-url> [stream-url ...]\n", stderr)
     Darwin.exit(2)
 }
 
@@ -66,14 +77,21 @@ Task { @MainActor in
     }
 
     do {
-        let urls = try await HarnessSupport.resolvePlayableURLs(from: positionalArguments)
+        let urls = try await {
+            if skipURLParsing {
+                return try HarnessSupport.resolveInputURLs(from: positionalArguments)
+            }
+
+            return try await HarnessSupport.resolvePlayableURLs(from: positionalArguments)
+        }()
         let harness = StreamHarness(debugLoggingEnabled: debugLoggingEnabled)
         harness.setVolume(volume)
         let exitCode = await harness.run(
             urls: urls,
             playDuration: playDuration,
             printPowerLevels: printPowerLevels,
-            forceAVPlayer: forceAVPlayer
+            forceAVPlayer: forceAVPlayer,
+			noLoop : noLoop
         )
         if debugLoggingEnabled {
             fputs("[main] exiting with code \(exitCode)\n", stderr)
@@ -86,3 +104,4 @@ Task { @MainActor in
 }
 
 dispatchMain()
+

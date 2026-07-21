@@ -51,7 +51,8 @@ final class StreamHarness: NSObject, AudioStreamDelegate, @preconcurrency AVPlay
         urls: [URL],
         playDuration: TimeInterval = 5,
         printPowerLevels: Bool = false,
-        forceAVPlayer: Bool = false
+        forceAVPlayer: Bool = false,
+		noLoop : Bool = false
     ) async -> Int32 {
         guard !urls.isEmpty else {
             return 2
@@ -88,6 +89,11 @@ final class StreamHarness: NSObject, AudioStreamDelegate, @preconcurrency AVPlay
                         return
                     }
                 }
+
+			 if noLoop 
+			 {
+				finish(with:0)	
+			}
             }
         }
 

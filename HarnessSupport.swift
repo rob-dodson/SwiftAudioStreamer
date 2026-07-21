@@ -24,6 +24,28 @@ enum HarnessInputError: LocalizedError {
 }
 
 enum HarnessSupport {
+    static let usage = """
+    Usage: swift-audio-streamer [--help|-?] [--debug] [--power] [--avplayer] [--noloop] [--noparse] [--volume 0.0-1.0] [--play-duration seconds] <stream-url> [stream-url ...]
+      --help, -?              Show this usage information.
+      --debug                 Print debug logging.
+      --power                 Print power levels during custom AudioStream playback.
+      --avplayer              Force AVPlayer playback for all stream URLs.
+      --noparse               Do not parse PLS/M3U playlists; pass input URLs directly to the selected player.
+      --noloop                Don't loop over the URLS.
+      --volume 0.0-1.0        Set playback volume. Defaults to 1.0.
+      --play-duration seconds Set how long each stream plays before rotating. Defaults to 5.
+    """
+
+    static func resolveInputURLs(from arguments: [String]) throws -> [URL] {
+        try arguments.map { argument in
+            guard let url = resolveInputURL(argument) else {
+                throw HarnessInputError.invalidInput(argument)
+            }
+
+            return url
+        }
+    }
+
     static func resolvePlayableURLs(from arguments: [String]) async throws -> [URL] {
         var resolved: [URL] = []
 
