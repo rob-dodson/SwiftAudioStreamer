@@ -187,7 +187,7 @@ final class StreamHarness: NSObject, AudioStreamDelegate, @preconcurrency AVPlay
                 )
 
                 do {
-                    try await Task.sleep(nanoseconds: 250_000_000)
+                    try await Task.sleep(nanoseconds: 100_000_000)
                 } catch {
                     return
                 }
